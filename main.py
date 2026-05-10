@@ -446,3 +446,257 @@ def get_theme_gpt_summary(
         "weakestTheme": weakest_theme,
         "answer": answer
     }
+import json
+import os
+from datetime import date
+
+SNAPSHOT_FILE = "news_snapshots.json"
+
+
+def load_snapshots():
+    if not os.path.exists(SNAPSHOT_FILE):
+        return []
+
+    try:
+        with open(SNAPSHOT_FILE, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except Exception:
+        return []
+
+
+def save_snapshots(snapshots):
+    with open(SNAPSHOT_FILE, "w", encoding="utf-8") as file:
+        json.dump(snapshots, file, ensure_ascii=False, indent=2)
+
+
+def mood_to_score(mood: str):
+    if mood == "호재 우세":
+        return 2
+    if mood == "호재/악재 혼재":
+        return 1
+    if mood == "중립":
+        return 0
+    if mood == "악재 우세":
+        return -2
+    return 0
+
+
+def make_snapshot_for_queries(query_list, limit):
+    items = []
+
+    for query in query_list:
+        articles = get_google_news(query, limit)
+        result = analyze_news(query, articles)
+
+        items.append({
+            "query": query,
+            "mood": result["mood"],
+            "score": mood_to_score(result["mood"]),
+            "summary": result["summary"],
+            "positiveCount": result["positiveCount"],
+            "negativeCount": result["negativeCount"],
+            "keyThemes": result["keyThemes"],
+            "positiveFactors": result["positiveFactors"],
+            "negativeFactors": result["negativeFactors"],
+            "topNewsTitles": [news["title"] for news in result["topNews"][:3]]
+        })
+
+    return items
+
+
+@app.get("/v1/news/save-snapshot")
+def save_news_snapshot(
+    queries: str = Query(..., description="쉼표로 구분한 관심종목입니다. 예: 삼성전자,SK하이닉스,에코프로"),
+    limit: int = Query(default=5, ge=3, le=8)
+):
+    query_list = [q.strip() for q in queries.split(",") if q.strip()]
+    query_list = query_list[:10]
+
+    today_text = date.today().isoformat()
+
+    snapshot = {
+        "date": today_text,
+        "savedAt": datetime.now().isoformat(),
+        "queries": query_list,
+        "items": make_snapshot_for_queries(query_list, limit)
+    }
+
+    snapshots = load_snapshots()
+    snapshots.append(snapshot)
+
+    # 너무 커지는 것을 막기 위해 최근 30개만 보관
+    snapshots = snapshots[-30:]
+
+    save_snapshots(snapshots)
+
+    answer = f"""
+[뉴스 스냅샷 저장 완료]
+
+- 저장일: {today_text}
+- 저장 종목 수: {len(query_list)}개
+- 저장 종목: {", ".join(query_list)}
+
+이제 다음 날 같은 관심종목으로 비교하면 어제 대비 오늘 뉴스 분위기 변화를 볼 수 있습니다.
+""".strip()
+
+    return {
+        "date": today_text,
+        "queries": query_list,
+        "answer": answer
+    }
+
+
+@app.get("/v1/news/compare-snapshot")
+def compare_news_snapshot(
+    queries: str = Query(..., description="쉼표로 구분한 관심종목입니다. 예: 삼성전자,SK하이닉스,에코프로"),
+    limit: int = Query(default=5, ge=3, le=8),
+    saveCurrent: bool = Query(default=True, description="비교 후 오늘 스냅샷을 저장할지 여부입니다.")
+):
+    query_list = [q.strip() for q in queries.split(",") if q.strip()]
+    query_list = query_list[:10]
+
+    today_text = date.today().isoformat()
+
+    snapshots = load_snapshots()
+
+    previous_snapshot = None
+
+    # 오늘이 아닌 가장 최근 스냅샷 찾기
+    for snapshot in reversed(snapshots):
+        if snapshot.get("date") != today_text:
+            previous_snapshot = snapshot
+            break
+
+    current_items = make_snapshot_for_queries(query_list, limit)
+
+    if previous_snapshot is None:
+        if saveCurrent:
+            snapshots.append({
+                "date": today_text,
+                "savedAt": datetime.now().isoformat(),
+                "queries": query_list,
+                "items": current_items
+            })
+            snapshots = snapshots[-30:]
+            save_snapshots(snapshots)
+
+        answer = f"""
+[어제와 오늘 뉴스 비교]
+
+아직 비교할 이전 스냅샷이 없습니다.
+
+오늘 관심종목 뉴스 상태는 저장해두었습니다.
+내일 다시 비교하면 오늘 저장값과 내일 뉴스 흐름을 비교할 수 있습니다.
+
+분석 종목:
+- {", ".join(query_list)}
+""".strip()
+
+        return {
+            "hasPreviousSnapshot": False,
+            "answer": answer
+        }
+
+    previous_items = previous_snapshot.get("items", [])
+    previous_map = {item["query"]: item for item in previous_items}
+
+    improved = []
+    worsened = []
+    unchanged = []
+    details = []
+
+    for current in current_items:
+        query = current["query"]
+        previous = previous_map.get(query)
+
+        if not previous:
+            details.append(f"[{query}]\n- 이전 저장값 없음\n- 오늘 분위기: {current['mood']}")
+            continue
+
+        diff = current["score"] - previous["score"]
+
+        if diff > 0:
+            change_label = "개선"
+            improved.append(query)
+        elif diff < 0:
+            change_label = "악화"
+            worsened.append(query)
+        else:
+            change_label = "비슷함"
+            unchanged.append(query)
+
+        new_themes = [
+            theme for theme in current["keyThemes"]
+            if theme not in previous.get("keyThemes", [])
+        ]
+
+        new_negative = [
+            word for word in current["negativeFactors"]
+            if word not in previous.get("negativeFactors", [])
+        ]
+
+        detail = f"""
+[{query}]
+- 이전 분위기: {previous["mood"]}
+- 오늘 분위기: {current["mood"]}
+- 변화 판단: {change_label}
+- 이전 요약: {previous["summary"]}
+- 오늘 요약: {current["summary"]}
+- 새로 보이는 테마: {", ".join(new_themes) if new_themes else "특별히 새 테마 없음"}
+- 새 부정 키워드: {", ".join(new_negative) if new_negative else "특별히 새 부정 키워드 없음"}
+""".strip()
+
+        details.append(detail)
+
+    if worsened:
+        headline = "뉴스 분위기가 나빠진 종목이 있습니다: " + ", ".join(worsened)
+    elif improved:
+        headline = "뉴스 분위기가 좋아진 종목이 있습니다: " + ", ".join(improved)
+    else:
+        headline = "관심종목 뉴스 분위기는 이전 저장값과 큰 차이가 없습니다."
+
+    answer = f"""
+[어제와 오늘 뉴스 변화 비교]
+
+1. 전체 요약
+- 비교 기준일: {previous_snapshot.get("date")}
+- 오늘 날짜: {today_text}
+- {headline}
+
+2. 분위기 개선 종목
+- {", ".join(improved) if improved else "없음"}
+
+3. 분위기 악화 종목
+- {", ".join(worsened) if worsened else "없음"}
+
+4. 큰 변화 없는 종목
+- {", ".join(unchanged) if unchanged else "없음"}
+
+5. 종목별 변화
+{chr(10).join(details)}
+
+6. 확인할 점
+- 악화 종목은 기사 원문, 공시, 실적 이슈를 우선 확인하세요.
+- 개선 종목은 이미 주가에 반영된 재료인지 확인하세요.
+- 이 비교는 뉴스 제목 기반 분석이며 투자 추천이 아닙니다.
+""".strip()
+
+    if saveCurrent:
+        snapshots.append({
+            "date": today_text,
+            "savedAt": datetime.now().isoformat(),
+            "queries": query_list,
+            "items": current_items
+        })
+        snapshots = snapshots[-30:]
+        save_snapshots(snapshots)
+
+    return {
+        "hasPreviousSnapshot": True,
+        "previousDate": previous_snapshot.get("date"),
+        "currentDate": today_text,
+        "improved": improved,
+        "worsened": worsened,
+        "unchanged": unchanged,
+        "answer": answer
+    }
