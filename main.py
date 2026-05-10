@@ -313,5 +313,75 @@ def watchlist_insight(
         "watchlistCount": len(items),
         "headline": headline,
         "items": items,
+        @app.get("/v1/news/gpt-summary")
+def gpt_summary(
+    query: str = Query(..., description="분석할 종목명. 예: 삼성전자"),
+    limit: int = Query(default=5, ge=3, le=8),
+    top: int = Query(default=3, ge=1, le=3)
+):
+    articles = get_google_news(query, limit)
+    insight = build_insight(query, articles, top)
+
+    key_themes = ", ".join(insight.get("keyThemes", [])) or "뚜렷한 핵심 테마 없음"
+    positive_factors = ", ".join(insight.get("positiveFactors", [])) or "뚜렷한 긍정 키워드 없음"
+    negative_factors = ", ".join(insight.get("negativeFactors", [])) or "뚜렷한 부정 키워드 없음"
+
+    risk_texts = []
+    for risk in insight.get("riskFlags", []):
+        risk_texts.append(f"- {risk.get('description', '')}")
+
+    if not risk_texts:
+        risk_texts.append("- 특별히 강한 위험 신호는 감지되지 않았습니다.")
+
+    news_texts = []
+    for idx, news in enumerate(insight.get("topNews", [])[:top], start=1):
+        title = news.get("title", "")
+        source = news.get("source", "")
+        sentiment_label = news.get("sentimentLabel", "")
+        why = news.get("whyItMatters", "")
+
+        news_texts.append(
+            f"{idx}. {title}\n"
+            f"   - 출처: {source}\n"
+            f"   - 판단: {sentiment_label}\n"
+            f"   - 의미: {why}"
+        )
+
+    if not news_texts:
+        news_texts.append("주요 뉴스를 찾지 못했습니다.")
+
+    answer = f"""
+[{query} 뉴스 인사이트]
+
+1. 전체 분위기
+- {insight.get("moodLabel")}
+- 점수: {insight.get("score")}
+- 요약: {insight.get("oneLineSummary")}
+
+2. 핵심 테마
+- {key_themes}
+
+3. 긍정 요인
+- {positive_factors}
+
+4. 부정/위험 요인
+- {negative_factors}
+
+5. 주요 뉴스와 의미
+{chr(10).join(news_texts)}
+
+6. 위험 신호
+{chr(10).join(risk_texts)}
+
+7. 투자자가 확인할 점
+- {insight.get("investorTakeaway")}
+- 뉴스 제목 기반 분석이므로 기사 원문, 공시, 실적 숫자를 함께 확인해야 합니다.
+- 이 내용은 투자 참고용이며 매수·매도 추천이 아닙니다.
+""".strip()
+
+    return {
+        "query": query,
+        "answer": answer
+    }
         "caution": "뉴스 제목 기반 분석입니다. 기사 원문, 공시, 실적 확인이 필요하며 투자 추천이 아닙니다."
     }
