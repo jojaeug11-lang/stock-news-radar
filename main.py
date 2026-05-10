@@ -8,22 +8,22 @@ app = FastAPI(title="Stock News Insight API", version="1.1.0")
 
 
 POSITIVE_WORDS = [
-    "상승", "강세", "급등", "호재", "수주", "계약", "공급", "실적", "흑자",
-    "성장", "개선", "확대", "돌파", "목표가 상향", "매수", "기대", "회복",
-    "증가", "최대", "신고가", "승인", "협력", "투자"
+    "상승", "강세", "급등", "호재", "수주", "계약", "공급", "실적",
+    "흑자", "성장", "개선", "확대", "돌파", "매수", "기대",
+    "회복", "증가", "최대", "신고가", "승인", "협력", "투자"
 ]
 
 NEGATIVE_WORDS = [
-    "하락", "약세", "급락", "악재", "적자", "손실", "부진", "감소", "우려",
-    "리콜", "소송", "논란", "압수수색", "규제", "매도", "목표가 하향",
-    "위기", "중단", "철회", "하향", "불확실", "경고"
+    "하락", "약세", "급락", "악재", "적자", "손실", "부진", "감소",
+    "우려", "리콜", "소송", "논란", "압수수색", "규제", "매도",
+    "위기", "중단", "철회", "불확실", "경고"
 ]
 
 THEME_MAP = {
     "실적": ["실적", "영업이익", "매출", "순이익", "흑자", "적자"],
-    "수주/계약": ["수주", "계약", "공급", "납품", "발주"],
+    "수주/계약": ["수주", "계약", "공급", "납품"],
     "반도체": ["반도체", "HBM", "메모리", "AI칩", "파운드리"],
-    "배터리": ["배터리", "2차전지", "양극재", "음극재", "전해액", "리튬"],
+    "배터리": ["배터리", "2차전지", "양극재", "리튬"],
     "바이오": ["임상", "FDA", "신약", "승인", "바이오", "치료제"],
     "정책/규제": ["정부", "정책", "규제", "관세", "지원", "보조금"],
     "소송/리스크": ["소송", "압수수색", "논란", "리콜", "제재"],
@@ -92,7 +92,7 @@ def explain_why(title: str, themes):
     if any(word in title for word in NEGATIVE_WORDS):
         return "부정적 표현이 포함되어 단기 변동성 확대 요인이 될 수 있습니다."
 
-    return "현재로서는 제목만으로 영향도를 강하게 판단하기 어렵습니다."
+    return "제목만으로는 영향도를 강하게 판단하기 어렵습니다."
 
 
 def analyze_article(article):
@@ -116,7 +116,8 @@ def analyze_article(article):
 
     importance = 1
     importance += min(2, len(themes))
-    importance += 1 if positive_hits or negative_hits else 0
+    if positive_hits or negative_hits:
+        importance += 1
     importance = min(5, importance)
 
     return {
@@ -138,7 +139,6 @@ def make_risk_flags(analyzed_articles):
 
     negative_count = sum(1 for a in analyzed_articles if a["sentiment"] == "negative")
     positive_count = sum(1 for a in analyzed_articles if a["sentiment"] == "positive")
-
     all_titles = " ".join([a["title"] for a in analyzed_articles])
 
     if negative_count >= 2:
@@ -159,10 +159,10 @@ def make_risk_flags(analyzed_articles):
         flags.append({
             "type": "priced_in_risk",
             "severity": "medium",
-            "description": "이미 주가에 기대감이 일부 반영됐을 가능성을 확인해야 합니다."
+            "description": "이미 주가에 기대감이 일부 반영됐을 가능성이 있습니다."
         })
 
-    if positive_count >= 3 and negative_count >= 1:
+    if positive_count >= 2 and negative_count >= 1:
         flags.append({
             "type": "mixed_signal",
             "severity": "low",
@@ -177,7 +177,6 @@ def build_insight(query: str, articles, top_count: int = 5):
 
     positive_count = sum(1 for a in analyzed if a["sentiment"] == "positive")
     negative_count = sum(1 for a in analyzed if a["sentiment"] == "negative")
-    neutral_count = sum(1 for a in analyzed if a["sentiment"] == "neutral")
 
     score = 0
     for article in analyzed:
@@ -225,13 +224,13 @@ def build_insight(query: str, articles, top_count: int = 5):
     )
 
     if mood == "positive":
-        takeaway = "긍정적 뉴스가 많지만, 실제 공시나 실적 숫자로 이어지는지 확인하는 것이 중요합니다."
+        takeaway = "긍정적 뉴스가 많지만 실제 공시나 실적 숫자로 이어지는지 확인해야 합니다."
     elif mood == "negative":
         takeaway = "악재성 뉴스가 많아 단기 변동성 확대 가능성을 주의해야 합니다."
     elif mood == "mixed":
-        takeaway = "호재와 악재가 함께 있어 기사별 재료의 지속성과 실제 영향을 구분해야 합니다."
+        takeaway = "호재와 악재가 함께 있어 재료의 지속성과 실제 영향을 구분해야 합니다."
     else:
-        takeaway = "아직 강한 재료는 부족해 보이며, 추가 뉴스나 공시 확인이 필요합니다."
+        takeaway = "아직 강한 재료는 부족해 보이며 추가 뉴스나 공시 확인이 필요합니다."
 
     return {
         "query": query,
