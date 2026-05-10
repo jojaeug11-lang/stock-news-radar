@@ -313,3 +313,136 @@ def get_watchlist_gpt_summary(
         "generatedAt": datetime.now().isoformat(),
         "answer": radar_summary
     }
+@app.get("/v1/news/theme-summary")
+def get_theme_gpt_summary(
+    themes: str = Query(..., description="쉼표로 구분한 테마입니다. 예: 반도체,2차전지,원전,로봇,바이오"),
+    limit: int = Query(default=5, ge=3, le=8)
+):
+    theme_list = [theme.strip() for theme in themes.split(",") if theme.strip()]
+    theme_list = theme_list[:10]
+
+    if not theme_list:
+        return {
+            "themes": [],
+            "answer": "분석할 테마가 없습니다."
+        }
+
+    items = []
+
+    positive_themes = []
+    negative_themes = []
+    mixed_themes = []
+    neutral_themes = []
+
+    scored_themes = []
+
+    for theme in theme_list:
+        search_query = f"{theme} 주식 관련주"
+        articles = get_google_news(search_query, limit)
+        result = analyze_news(theme, articles)
+
+        mood = result["mood"]
+        positive_count = result["positiveCount"]
+        negative_count = result["negativeCount"]
+
+        theme_score = (positive_count - negative_count) * 10
+        theme_score += len(result["keyThemes"]) * 3
+
+        scored_themes.append({
+            "theme": theme,
+            "score": theme_score,
+            "mood": mood
+        })
+
+        if mood == "호재 우세":
+            positive_themes.append(theme)
+        elif mood == "악재 우세":
+            negative_themes.append(theme)
+        elif mood == "호재/악재 혼재":
+            mixed_themes.append(theme)
+        else:
+            neutral_themes.append(theme)
+
+        key_themes = ", ".join(result["keyThemes"]) if result["keyThemes"] else "뚜렷한 세부 테마 없음"
+        positive_factors = ", ".join(result["positiveFactors"]) if result["positiveFactors"] else "뚜렷한 긍정 키워드 없음"
+        negative_factors = ", ".join(result["negativeFactors"]) if result["negativeFactors"] else "뚜렷한 부정 키워드 없음"
+
+        top_news_lines = []
+
+        for index, news in enumerate(result["topNews"][:2], start=1):
+            top_news_lines.append(
+                f"{index}. {news['title']}\n"
+                f"   - 출처: {news['source']}\n"
+                f"   - 판단: {news['sentiment']}\n"
+                f"   - 의미: {news['whyItMatters']}"
+            )
+
+        if not top_news_lines:
+            top_news_lines.append("주요 뉴스를 찾지 못했습니다.")
+
+        item_text = f"""
+[{theme}]
+- 분위기: {result["mood"]}
+- 테마 점수: {theme_score}
+- 요약: {result["summary"]}
+- 세부 테마: {key_themes}
+- 긍정 요인: {positive_factors}
+- 부정/위험 요인: {negative_factors}
+- 주요 뉴스:
+{chr(10).join(top_news_lines)}
+""".strip()
+
+        items.append(item_text)
+
+    sorted_scores = sorted(scored_themes, key=lambda x: x["score"], reverse=True)
+
+    strongest_theme = sorted_scores[0]["theme"] if sorted_scores else "없음"
+    weakest_theme = sorted_scores[-1]["theme"] if sorted_scores else "없음"
+
+    if positive_themes:
+        headline = "뉴스 흐름이 강한 테마가 있습니다: " + ", ".join(positive_themes)
+    elif mixed_themes:
+        headline = "호재와 악재가 섞인 테마가 있습니다: " + ", ".join(mixed_themes)
+    elif negative_themes:
+        headline = "주의가 필요한 테마가 있습니다: " + ", ".join(negative_themes)
+    else:
+        headline = "테마 뉴스 흐름은 전반적으로 중립에 가깝습니다."
+
+    answer = f"""
+[테마 뉴스 레이더]
+
+1. 전체 요약
+- 분석 테마 수: {len(theme_list)}개
+- {headline}
+- 가장 강한 테마 후보: {strongest_theme}
+- 가장 약한 테마 후보: {weakest_theme}
+
+2. 호재 우세 테마
+- {", ".join(positive_themes) if positive_themes else "없음"}
+
+3. 악재 우세 테마
+- {", ".join(negative_themes) if negative_themes else "없음"}
+
+4. 호재/악재 혼재 테마
+- {", ".join(mixed_themes) if mixed_themes else "없음"}
+
+5. 중립 테마
+- {", ".join(neutral_themes) if neutral_themes else "없음"}
+
+6. 테마별 상세
+{chr(10).join(items)}
+
+7. 오늘 확인할 점
+- 강한 테마는 이미 주가에 반영된 재료인지 확인하세요.
+- 약한 테마나 악재 우세 테마는 기사 원문과 공시 여부를 먼저 확인하세요.
+- 테마 뉴스는 관련주 전체에 영향을 줄 수 있지만, 종목별 실적과 수급은 따로 확인해야 합니다.
+- 뉴스 제목 기반 분석이며 투자 추천이 아닙니다.
+""".strip()
+
+    return {
+        "themes": theme_list,
+        "generatedAt": datetime.now().isoformat(),
+        "strongestTheme": strongest_theme,
+        "weakestTheme": weakest_theme,
+        "answer": answer
+    }
