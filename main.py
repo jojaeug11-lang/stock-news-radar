@@ -204,3 +204,112 @@ def get_news_gpt_summary(
         "generatedAt": datetime.now().isoformat(),
         "answer": answer
     }
+@app.get("/v1/news/watchlist-summary")
+def get_watchlist_gpt_summary(
+    queries: str = Query(..., description="쉼표로 구분한 관심종목입니다. 예: 삼성전자,SK하이닉스,에코프로"),
+    limit: int = Query(default=5, ge=3, le=8)
+):
+    query_list = [q.strip() for q in queries.split(",") if q.strip()]
+    query_list = query_list[:10]
+
+    if not query_list:
+        return {
+            "queries": [],
+            "answer": "분석할 관심종목이 없습니다."
+        }
+
+    items = []
+
+    positive_items = []
+    negative_items = []
+    neutral_items = []
+    mixed_items = []
+
+    for query in query_list:
+        articles = get_google_news(query, limit)
+        result = analyze_news(query, articles)
+
+        mood = result["mood"]
+
+        if mood == "호재 우세":
+            positive_items.append(query)
+        elif mood == "악재 우세":
+            negative_items.append(query)
+        elif mood == "호재/악재 혼재":
+            mixed_items.append(query)
+        else:
+            neutral_items.append(query)
+
+        key_themes = ", ".join(result["keyThemes"]) if result["keyThemes"] else "뚜렷한 핵심 테마 없음"
+        positive_factors = ", ".join(result["positiveFactors"]) if result["positiveFactors"] else "뚜렷한 긍정 키워드 없음"
+        negative_factors = ", ".join(result["negativeFactors"]) if result["negativeFactors"] else "뚜렷한 부정 키워드 없음"
+
+        top_news_lines = []
+
+        for index, news in enumerate(result["topNews"][:2], start=1):
+            top_news_lines.append(
+                f"{index}. {news['title']}\n"
+                f"   - 출처: {news['source']}\n"
+                f"   - 판단: {news['sentiment']}\n"
+                f"   - 의미: {news['whyItMatters']}"
+            )
+
+        if not top_news_lines:
+            top_news_lines.append("주요 뉴스를 찾지 못했습니다.")
+
+        item_text = f"""
+[{query}]
+- 분위기: {result["mood"]}
+- 요약: {result["summary"]}
+- 핵심 테마: {key_themes}
+- 긍정 요인: {positive_factors}
+- 부정/위험 요인: {negative_factors}
+- 주요 뉴스:
+{chr(10).join(top_news_lines)}
+""".strip()
+
+        items.append(item_text)
+
+    if negative_items:
+        headline = "주의가 필요한 악재성 뉴스 종목이 있습니다: " + ", ".join(negative_items)
+    elif mixed_items:
+        headline = "호재와 악재가 섞인 종목이 있습니다: " + ", ".join(mixed_items)
+    elif positive_items:
+        headline = "긍정적 뉴스 흐름이 보이는 종목이 있습니다: " + ", ".join(positive_items)
+    else:
+        headline = "관심종목 뉴스 흐름은 전반적으로 중립에 가깝습니다."
+
+    radar_summary = f"""
+[관심종목 뉴스 레이더]
+
+1. 전체 요약
+- 분석 종목 수: {len(query_list)}개
+- {headline}
+
+2. 호재 우세 종목
+- {", ".join(positive_items) if positive_items else "없음"}
+
+3. 악재 우세 종목
+- {", ".join(negative_items) if negative_items else "없음"}
+
+4. 호재/악재 혼재 종목
+- {", ".join(mixed_items) if mixed_items else "없음"}
+
+5. 중립 종목
+- {", ".join(neutral_items) if neutral_items else "없음"}
+
+6. 종목별 상세
+{chr(10).join(items)}
+
+7. 오늘 확인할 점
+- 악재 우세 종목은 기사 원문과 공시 여부를 먼저 확인하세요.
+- 호재 우세 종목은 이미 주가에 반영된 재료인지 확인하세요.
+- 뉴스 제목 기반 분석이므로 기사 원문, 공시, 실적 숫자를 함께 확인해야 합니다.
+- 이 내용은 투자 참고용이며 매수·매도 추천이 아닙니다.
+""".strip()
+
+    return {
+        "queries": query_list,
+        "generatedAt": datetime.now().isoformat(),
+        "answer": radar_summary
+    }
